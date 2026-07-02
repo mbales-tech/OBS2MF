@@ -1,0 +1,41 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+x64/
+x86/
+Debug/
+Release/
+**/x64/
+**/Debug/
+**/Release/
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ipdb
+*.iobj
+*.obj
+*.tlog
+*.log
+
+# Installer output
+installer/OBS2MF-Setup-*.exe
+
+# NuGet packages (restore with: nuget restore OBS2MF.sln)
+src/packages/
+packages/
+
+# VS / user files
+.vs/
+*.user
+*.suo
+*.aps
+Generated Files/
+
+# Spike / throwaway experiments
+spike/
+
+# Old single-project scaffold (superseded by src/ + OBS2MF.sln)
+OBS2MF/
+OBS2MF.slnx
