@@ -3,7 +3,7 @@
 
 #define OBS2MF_VER_MAJOR 0
 #define OBS2MF_VER_MINOR 9
-#define OBS2MF_VER_PATCH 0
+#define OBS2MF_VER_PATCH 1
 #define OBS2MF_VER_BUILD 0
 
 #define OBS2MF_STR2(x) L#x
@@ -12,10 +12,19 @@
 #define OBS2MF_VERSION_STRING \
     OBS2MF_STR(OBS2MF_VER_MAJOR) L"." OBS2MF_STR(OBS2MF_VER_MINOR) L"." OBS2MF_STR(OBS2MF_VER_PATCH)
 
+// Narrow "MAJOR.MINOR.PATCH.BUILD" string for resource scripts (.rc).
+#define OBS2MF_STR2A(x) #x
+#define OBS2MF_STRA(x)  OBS2MF_STR2A(x)
+#define OBS2MF_VERSION_STRING_A \
+    OBS2MF_STRA(OBS2MF_VER_MAJOR) "." OBS2MF_STRA(OBS2MF_VER_MINOR) "." \
+    OBS2MF_STRA(OBS2MF_VER_PATCH) "." OBS2MF_STRA(OBS2MF_VER_BUILD)
+
 // For RC FILEVERSION/PRODUCTVERSION (comma form).
 #define OBS2MF_VERSION_COMMA OBS2MF_VER_MAJOR, OBS2MF_VER_MINOR, OBS2MF_VER_PATCH, OBS2MF_VER_BUILD
 
 #define OBS2MF_PRODUCT_NAME          L"OBS2MF"
-#define OBS2MF_CAMERA_FRIENDLY_NAME  L"OBS2MF Camera"
+// Windows' Frame Server appends " (Windows Virtual Camera)" to the friendly name in all
+// apps, so "OBS2MF" displays as "OBS2MF (Windows Virtual Camera)".
+#define OBS2MF_CAMERA_FRIENDLY_NAME  L"OBS2MF"
 #define OBS2MF_COMPANY               L"OBS2MF"
 #define OBS2MF_COPYRIGHT             L"Copyright (c) 2026. Portions derived from smourier/VCamSample (MIT)."

@@ -7,8 +7,8 @@ Unicode true
 !include "x64.nsh"
 
 !define PRODUCT       "OBS2MF"
-!define VERSION       "0.9.0.0"
-!define VERSION_TEXT  "0.9.0"
+!define VERSION       "0.9.1.0"
+!define VERSION_TEXT  "0.9.1"
 !define PUBLISHER     "OBS2MF"
 !define DLL           "Vcam.MediaSource.dll"
 !define EXE           "Vcam.Broker.exe"
@@ -34,8 +34,12 @@ VIAddVersionKey "FileDescription" "${PRODUCT} Installer"
 !insertmacro MUI_PAGE_LICENSE "${__FILEDIR__}\..\NOTICE.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_RUN "$INSTDIR\${EXE}"
+; Launch the tray app de-elevated: the installer runs as admin, and launching the exe
+; directly would inherit that elevated token. Going through explorer.exe hands it to the
+; non-elevated shell so the tray app runs as a normal user process.
+!define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Launch ${PRODUCT} now"
+!define MUI_FINISHPAGE_RUN_FUNCTION "LaunchDeElevated"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -50,16 +54,20 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+Function LaunchDeElevated
+  Exec '"$WINDIR\explorer.exe" "$INSTDIR\${EXE}"'
+FunctionEnd
+
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  ; stop a running broker so the exe/dll can be replaced
+  ; The media source DLL is loaded by the Windows Camera Frame Server (svchost) whenever a
+  ; consumer has the camera open, which locks the file on upgrade. Stop the broker and the
+  ; Frame Server services so the DLL is released; they are demand-start and resume on next use.
   nsExec::Exec 'taskkill /f /im "${EXE}"'
-  ; unregister any previous copy of the DLL (ignore errors)
-  ${DisableX64FSRedirection}
-  nsExec::Exec '"$SYSDIR\regsvr32.exe" /u /s "$INSTDIR\${DLL}"'
-  ${EnableX64FSRedirection}
-  Sleep 500
+  nsExec::Exec 'net stop "FrameServerMonitor"'
+  nsExec::Exec 'net stop "FrameServer"'
+  Sleep 1500
 
   File "${SRC}\${EXE}"
   File "${SRC}\${DLL}"
@@ -91,23 +99,33 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+  ; stop the broker and Frame Server so the DLL is released and can be removed now
   nsExec::Exec 'taskkill /f /im "${EXE}"'
+  nsExec::Exec 'net stop "FrameServerMonitor"'
+  nsExec::Exec 'net stop "FrameServer"'
+  Sleep 1500
+
+  ; DllUnregisterServer removes HKLM\Software\Classes\CLSID\{our CLSID}; run while DLL present
   ${DisableX64FSRedirection}
   nsExec::ExecToLog '"$SYSDIR\regsvr32.exe" /u /s "$INSTDIR\${DLL}"'
   ${EnableX64FSRedirection}
-  Sleep 500
 
-  ; DLL may still be loaded in the Frame Server; delete on reboot if needed
+  ; files (DLL scheduled for reboot only if something re-locked it)
   Delete /REBOOTOK "$INSTDIR\${DLL}"
   Delete "$INSTDIR\${EXE}"
   Delete "$INSTDIR\NOTICE.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 
+  ; Start-menu shortcuts
   Delete "$SMPROGRAMS\${PRODUCT}\${PRODUCT}.lnk"
   Delete "$SMPROGRAMS\${PRODUCT}\Uninstall ${PRODUCT}.lnk"
   RMDir "$SMPROGRAMS\${PRODUCT}"
 
+  ; per-user logs written by the broker
+  RMDir /r "$LOCALAPPDATA\OBS2MF"
+
+  ; all registry we created
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT}"
   DeleteRegKey HKLM "Software\${PRODUCT}"
 SectionEnd

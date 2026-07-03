@@ -287,7 +287,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR,
     g_nid.uCallbackMessage = WM_TRAYICON;
     g_nid.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_VCAMSAMPLE));
     if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(g_nid.szTip, L"OBS2MF Camera");
+    wcscpy_s(g_nid.szTip, L"OBS2MF Virtual Camera");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
     // start frame server + producer, then create the camera
