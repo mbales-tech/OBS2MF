@@ -8,7 +8,7 @@ Release/
 **/x64/
 **/Debug/
 **/Release/
-*.exe
+.exe
 *.dll
 *.lib
 *.exp
@@ -19,8 +19,8 @@ Release/
 *.tlog
 *.log
 
-# Installer output
-installer/OBS2MF-Setup-*.exe
+# Installer: the release installer is intentionally committed (see installer/).
+# Build artifacts (exe/dll/pdb, x64/, Release/, etc.) remain ignored above.
 
 # NuGet packages (restore with: nuget restore OBS2MF.sln)
 src/packages/
