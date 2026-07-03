@@ -19,8 +19,8 @@ Release/
 *.tlog
 *.log
 
-# Installer: the release installer is intentionally committed (see installer/).
-# Build artifacts (exe/dll/pdb, x64/, Release/, etc.) remain ignored above.
+# Installer output: distributed via GitHub Releases (scripts/release.ps1), not committed.
+installer/OBS2MF-Setup-*.exe
 
 # NuGet packages (restore with: nuget restore OBS2MF.sln)
 src/packages/
