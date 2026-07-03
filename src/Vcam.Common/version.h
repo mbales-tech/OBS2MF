@@ -2,7 +2,7 @@
 #pragma once
 
 #define OBS2MF_VER_MAJOR 0
-#define OBS2MF_VER_MINOR 1
+#define OBS2MF_VER_MINOR 9
 #define OBS2MF_VER_PATCH 0
 #define OBS2MF_VER_BUILD 0
 

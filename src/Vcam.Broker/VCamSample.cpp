@@ -13,6 +13,7 @@
 #include "framework.h"
 #include "tools.h"
 #include "Resource.h"
+#include "ObsCapture.h"
 
 #include <thread>
 #include <atomic>
@@ -91,135 +92,44 @@ static void FillBlackNV12(std::vector<BYTE>& buf)
 }
 
 // ---- OBS capture -------------------------------------------------------------
-class ObsCapture
-{
-    wil::com_ptr_nothrow<IMFSourceReader> _reader;
-
-public:
-    bool Ensure()
-    {
-        if (_reader) return true;
-
-        wil::com_ptr_nothrow<IMFAttributes> attrs;
-        if (FAILED(MFCreateAttributes(&attrs, 1))) return false;
-        attrs->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-
-        IMFActivate** devices = nullptr;
-        UINT32 count = 0;
-        if (FAILED(MFEnumDeviceSources(attrs.get(), &devices, &count))) return false;
-
-        wil::com_ptr_nothrow<IMFMediaSource> source;
-        for (UINT32 i = 0; i < count; i++)
-        {
-            if (!source)
-            {
-                WCHAR* name = nullptr;
-                UINT32 len = 0;
-                if (SUCCEEDED(devices[i]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, &len)))
-                {
-                    if (wcsstr(name, L"OBS Virtual Camera"))
-                        devices[i]->ActivateObject(IID_PPV_ARGS(&source));
-                    CoTaskMemFree(name);
-                }
-            }
-            devices[i]->Release();
-        }
-        CoTaskMemFree(devices);
-        if (!source)
-        {
-            g_log.Logf(L"OBS Virtual Camera not found among capture devices");
-            return false;
-        }
-
-        wil::com_ptr_nothrow<IMFAttributes> ra;
-        MFCreateAttributes(&ra, 1);
-        ra->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
-        if (FAILED(MFCreateSourceReaderFromMediaSource(source.get(), ra.get(), &_reader)))
-        {
-            g_log.Logf(L"MFCreateSourceReaderFromMediaSource failed");
-            return false;
-        }
-
-        wil::com_ptr_nothrow<IMFMediaType> mt;
-        MFCreateMediaType(&mt);
-        mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        mt->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-        MFSetAttributeSize(mt.get(), MF_MT_FRAME_SIZE, kW, kH);
-        if (FAILED(_reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, mt.get())))
-        {
-            g_log.Logf(L"OBS reader SetCurrentMediaType(NV12 1280x720) failed");
-            _reader.reset();
-            return false;
-        }
-        g_log.Logf(L"OBS Virtual Camera opened @ %ux%u NV12", kW, kH);
-        return true;
-    }
-
-    bool GetFrame(std::vector<BYTE>& out)
-    {
-        if (!Ensure()) return false;
-
-        DWORD streamIndex = 0, flags = 0;
-        LONGLONG ts = 0;
-        wil::com_ptr_nothrow<IMFSample> sample;
-        HRESULT hr = _reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &streamIndex, &flags, &ts, &sample);
-        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ERROR) || (flags & MF_SOURCE_READERF_ENDOFSTREAM))
-        {
-            g_log.Logf(L"OBS ReadSample ended (hr=0x%08X flags=0x%08X); will reopen", hr, flags);
-            _reader.reset();
-            return false;
-        }
-        if (!sample) return false; // stream tick / no data this cycle
-
-        wil::com_ptr_nothrow<IMFMediaBuffer> buf;
-        if (FAILED(sample->ConvertToContiguousBuffer(&buf))) return false;
-        BYTE* p = nullptr;
-        DWORD maxLen = 0, curLen = 0;
-        if (FAILED(buf->Lock(&p, &maxLen, &curLen))) return false;
-        bool ok = curLen >= kFrameBytes;
-        if (ok) memcpy(out.data(), p, kFrameBytes);
-        buf->Unlock();
-        return ok;
-    }
-
-    void Close() { _reader.reset(); }
-};
+// OBS Virtual Camera is a DirectShow-only softcam (invisible to Media Foundation),
+// so it is captured via a DirectShow graph in ObsCapture (ObsCapture.cpp). This hook
+// lets that module log through the broker's logger.
+void ObsLog(const wchar_t* msg) { g_log.Logf(L"%s", msg); }
 
 // ---- producer ----------------------------------------------------------------
 static void ProducerThread()
 {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    ObsCapture obs;
+    ObsCapture obs(kW, kH);
     std::vector<BYTE> frame(kFrameBytes);
     uint32_t seq = 0;
-    LARGE_INTEGER qpf; QueryPerformanceCounter(&qpf);
+    int retryDelay = 0; // frames until we retry opening OBS (throttle log spam)
 
     while (!g_quit.load())
     {
         int src = g_source.load();
         int reported = src;
-        bool paced = true; // whether we still need to sleep to hit ~30fps
 
         if (src == SourceOBS)
         {
-            if (obs.GetFrame(frame))
+            if (!obs.Running())
             {
-                paced = false; // ReadSample already paces us to OBS' frame rate
+                if (retryDelay <= 0) { if (!obs.Start()) retryDelay = 60; }
+                else retryDelay--;
             }
-            else
+            if (!(obs.Running() && obs.GetFrame(frame)))
             {
-                FillTestPatternNV12(frame, seq); // auto fallback when OBS unavailable
+                FillTestPatternNV12(frame, seq); // auto fallback (OBS unavailable / no frame yet)
                 reported = SourceTest;
             }
         }
-        else if (src == SourceTest)
+        else
         {
-            FillTestPatternNV12(frame, seq);
-        }
-        else // SourceOff
-        {
-            FillBlackNV12(frame);
-            obs.Close();
+            if (obs.Running()) obs.Stop();
+            retryDelay = 0; // re-arm immediate retry next time OBS is selected
+            if (src == SourceTest) FillTestPatternNV12(frame, seq);
+            else FillBlackNV12(frame); // SourceOff
         }
 
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
@@ -235,9 +145,9 @@ static void ProducerThread()
         hdr.flags = flag_valid;
         g_pipe.Publish(hdr, frame.data());
 
-        if (paced) Sleep(33);
+        Sleep(33);
     }
-    obs.Close();
+    obs.Stop();
     CoUninitialize();
 }
 

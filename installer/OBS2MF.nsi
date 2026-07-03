@@ -7,8 +7,8 @@ Unicode true
 !include "x64.nsh"
 
 !define PRODUCT       "OBS2MF"
-!define VERSION       "0.1.0.0"
-!define VERSION_TEXT  "0.1.0"
+!define VERSION       "0.9.0.0"
+!define VERSION_TEXT  "0.9.0"
 !define PUBLISHER     "OBS2MF"
 !define DLL           "Vcam.MediaSource.dll"
 !define EXE           "Vcam.Broker.exe"

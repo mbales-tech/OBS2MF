@@ -201,6 +201,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="ObsCapture.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
     <ClInclude Include="Tools.h" />
@@ -208,6 +209,7 @@
     <ClInclude Include="WinTrace.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="ObsCapture.cpp" />
     <ClCompile Include="Tools.cpp" />
     <ClCompile Include="VCamSample.cpp" />
     <ClCompile Include="WinTrace.cpp" />
