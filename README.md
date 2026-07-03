@@ -56,6 +56,19 @@ Outputs: `x64\Release\Vcam.MediaSource.dll` and `x64\Release\Vcam.Broker.exe`.
 Produces `installer\OBS2MF-Setup-<version>.exe`, which installs to `%ProgramFiles%\OBS2MF`,
 registers the media source DLL (HKLM, elevated), and adds a Start-menu shortcut (no auto-start).
 
+## Releasing
+
+Installers are published as **GitHub Release assets** (download page:
+`https://github.com/mbales-tech/OBS2MF/releases`). One-time: `gh auth login`. Then, after
+bumping the version in `src/Vcam.Common/version.h` **and** `installer/OBS2MF.nsi`:
+
+```powershell
+pwsh -File scripts/release.ps1
+```
+
+This reads the version from `version.h`, rebuilds the solution + installer, creates the
+`v<version>` tag/Release, and uploads `OBS2MF-Setup-<version>.exe` as the asset.
+
 ## Manual dev registration (without the installer)
 
 The media source DLL must live where the Frame Server service accounts can read it (not under
