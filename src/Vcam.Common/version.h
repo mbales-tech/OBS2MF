@@ -3,7 +3,7 @@
 
 #define OBS2MF_VER_MAJOR 0
 #define OBS2MF_VER_MINOR 9
-#define OBS2MF_VER_PATCH 1
+#define OBS2MF_VER_PATCH 2
 #define OBS2MF_VER_BUILD 0
 
 #define OBS2MF_STR2(x) L#x

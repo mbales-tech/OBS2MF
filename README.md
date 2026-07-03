@@ -2,7 +2,8 @@
 
 A Windows 11 **Media Foundation virtual camera** that exposes the **OBS Virtual Camera**
 (or a built-in animated test pattern) to any app — including Media Foundation apps and
-browsers — as a system camera named **"OBS2MF Camera"**, with a system-tray control panel.
+browsers — as a system camera named **"OBS2MF"** (shown by Windows as
+*"OBS2MF (Windows Virtual Camera)"*), with a system-tray control panel.
 
 Built for Windows 11 (x64) with Microsoft-only dependencies. Requires the Windows 11 SDK
 (10.0.26100+) and Visual Studio 2026.
@@ -11,7 +12,7 @@ Built for Windows 11 (x64) with Microsoft-only dependencies. Requires the Window
 
 ```
 OBS Studio ──(OBS Virtual Camera)──►  Vcam.Broker.exe  (tray app, your session)
-                                        • captures OBS via IMFSourceReader (NV12 1280x720)
+                                        • captures OBS Virtual Camera via DirectShow (NV12 -> 1280x720)
                                         • animated test pattern
                                         • MFCreateVirtualCamera (Session / CurrentUser)
                                         • named-pipe frame server  \\.\pipe\OBS2MF.Frames
@@ -28,6 +29,8 @@ Apps / Edge ──► Frame Server (svchost) ──► Vcam.MediaSource.dll  (64
   tray app can't create `Global\` shared memory).
 - Output is **NV12** (verified accepted by the target 32-bit app and browsers — MJPEG is not
   required).
+- OBS's virtual camera is a **DirectShow-only** device (invisible to Media Foundation), so the
+  broker captures it with a DirectShow graph and forwards frames over the pipe.
 
 ## Layout
 
@@ -35,7 +38,7 @@ Apps / Edge ──► Frame Server (svchost) ──► Vcam.MediaSource.dll  (64
 |---|---|
 | `src/Vcam.Common/` | Header-only shared code: `version.h`, `guids.h` (frozen CLSID), `ipc.h` (pipe protocol), `log.h` |
 | `src/Vcam.MediaSource/` | 64-bit COM DLL (the virtual-camera media source) — derived from smourier/VCamSample (MIT) |
-| `src/Vcam.Broker/` | 64-bit tray app: OBS capture, test pattern, pipe server, camera lifetime, UI, logging |
+| `src/Vcam.Broker/` | 64-bit tray app: DirectShow OBS capture, test pattern, pipe server, camera lifetime, tray UI (source switch, auto-start, log), logging |
 | `installer/OBS2MF.nsi` | NSIS installer |
 
 ## Build
@@ -54,7 +57,22 @@ Outputs: `x64\Release\Vcam.MediaSource.dll` and `x64\Release\Vcam.Broker.exe`.
 & "C:\Program Files (x86)\NSIS\makensis.exe" installer\OBS2MF.nsi
 ```
 Produces `installer\OBS2MF-Setup-<version>.exe`, which installs to `%ProgramFiles%\OBS2MF`,
-registers the media source DLL (HKLM, elevated), and adds a Start-menu shortcut (no auto-start).
+registers the media source DLL (HKLM, elevated), and adds **all-users** Start-menu + Desktop
+shortcuts. On upgrade/uninstall it stops the Windows Camera Frame Server so the in-use DLL can
+be replaced/removed.
+
+## Tray controls
+
+Launch `Vcam.Broker.exe` (Start-menu / Desktop shortcut). The camera exists only while the
+broker runs (Session lifetime). Right-click the tray icon:
+
+- **Camera active / stopped** — create or remove the virtual camera.
+- **Source: OBS Virtual Camera** *(default)* — live OBS; auto-falls back to the test pattern
+  when OBS's virtual camera isn't running.
+- **Source: Test pattern** — animated NV12 color bars.
+- **Start with Windows** — per-user auto-start at sign-in (`HKCU\...\Run`).
+- **Open log file** — `%LOCALAPPDATA%\OBS2MF\broker.log`.
+- **Exit**.
 
 ## Releasing
 

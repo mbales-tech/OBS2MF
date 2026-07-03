@@ -31,7 +31,7 @@ enum {
     ID_TOGGLE_CAM = 1001,
     ID_SRC_OBS,
     ID_SRC_TEST,
-    ID_SRC_OFF,
+    ID_AUTOSTART,
     ID_OPENLOG,
     ID_EXIT,
     ID_STATUS,
@@ -40,7 +40,7 @@ enum {
 static Logger g_log;
 static FramePipeServer g_pipe;
 static wil::com_ptr_nothrow<IMFVirtualCamera> g_vcam;
-static std::atomic<int> g_source{ SourceTest };
+static std::atomic<int> g_source{ SourceOBS };
 static std::atomic<bool> g_camRunning{ false };
 static std::atomic<bool> g_quit{ false };
 static std::thread g_producer;
@@ -85,12 +85,6 @@ static void FillTestPatternNV12(std::vector<BYTE>& buf, uint32_t frame)
     }
 }
 
-static void FillBlackNV12(std::vector<BYTE>& buf)
-{
-    memset(buf.data(), 16, (size_t)kW * kH);
-    memset(buf.data() + (size_t)kW * kH, 128, (size_t)kW * kH / 2);
-}
-
 // ---- OBS capture -------------------------------------------------------------
 // OBS Virtual Camera is a DirectShow-only softcam (invisible to Media Foundation),
 // so it is captured via a DirectShow graph in ObsCapture (ObsCapture.cpp). This hook
@@ -124,12 +118,11 @@ static void ProducerThread()
                 reported = SourceTest;
             }
         }
-        else
+        else // SourceTest
         {
             if (obs.Running()) obs.Stop();
             retryDelay = 0; // re-arm immediate retry next time OBS is selected
-            if (src == SourceTest) FillTestPatternNV12(frame, seq);
-            else FillBlackNV12(frame); // SourceOff
+            FillTestPatternNV12(frame, seq);
         }
 
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
@@ -192,6 +185,43 @@ static void StopCamera()
     g_log.Logf(L"Virtual camera stopped");
 }
 
+// ---- auto-start (per-user HKCU\...\Run; broker runs non-elevated) --------------
+static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+static const wchar_t* kRunVal = L"OBS2MF";
+
+static bool IsAutoStartEnabled()
+{
+    HKEY h; bool on = false;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_READ, &h) == ERROR_SUCCESS)
+    {
+        DWORD type = 0, sz = 0;
+        if (RegQueryValueExW(h, kRunVal, nullptr, &type, nullptr, &sz) == ERROR_SUCCESS && type == REG_SZ)
+            on = true;
+        RegCloseKey(h);
+    }
+    return on;
+}
+
+static void SetAutoStart(bool enable)
+{
+    HKEY h;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &h, nullptr) != ERROR_SUCCESS)
+        return;
+    if (enable)
+    {
+        wchar_t path[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        std::wstring q = L"\"" + std::wstring(path) + L"\"";
+        RegSetValueExW(h, kRunVal, 0, REG_SZ, (const BYTE*)q.c_str(), (DWORD)((q.size() + 1) * sizeof(wchar_t)));
+    }
+    else
+    {
+        RegDeleteValueW(h, kRunVal);
+    }
+    RegCloseKey(h);
+    g_log.Logf(L"Auto-start %s", enable ? L"enabled" : L"disabled");
+}
+
 // ---- tray --------------------------------------------------------------------
 static void ShowTrayMenu(HWND hwnd)
 {
@@ -202,8 +232,8 @@ static void ShowTrayMenu(HWND hwnd)
     int s = g_source.load();
     AppendMenuW(m, MF_STRING | (s == SourceOBS ? MF_CHECKED : 0), ID_SRC_OBS, L"Source: OBS Virtual Camera");
     AppendMenuW(m, MF_STRING | (s == SourceTest ? MF_CHECKED : 0), ID_SRC_TEST, L"Source: Test pattern");
-    AppendMenuW(m, MF_STRING | (s == SourceOff ? MF_CHECKED : 0), ID_SRC_OFF, L"Source: Off (black)");
     AppendMenuW(m, MF_SEPARATOR, 0, 0);
+    AppendMenuW(m, MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0), ID_AUTOSTART, L"Start with Windows");
     wchar_t st[128];
     wsprintfW(st, L"Consumers streaming: %d", g_pipe.ClientCount());
     AppendMenuW(m, MF_STRING | MF_GRAYED, ID_STATUS, st);
@@ -234,7 +264,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case ID_SRC_OBS:  g_source.store(SourceOBS);  g_log.Logf(L"Source -> OBS"); break;
         case ID_SRC_TEST: g_source.store(SourceTest); g_log.Logf(L"Source -> Test"); break;
-        case ID_SRC_OFF:  g_source.store(SourceOff);  g_log.Logf(L"Source -> Off"); break;
+        case ID_AUTOSTART: SetAutoStart(!IsAutoStartEnabled()); break;
         case ID_OPENLOG:
             ShellExecuteW(nullptr, L"open", g_log.Path().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             break;

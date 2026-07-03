@@ -7,8 +7,8 @@ Unicode true
 !include "x64.nsh"
 
 !define PRODUCT       "OBS2MF"
-!define VERSION       "0.9.1.0"
-!define VERSION_TEXT  "0.9.1"
+!define VERSION       "0.9.2.0"
+!define VERSION_TEXT  "0.9.2"
 !define PUBLISHER     "OBS2MF"
 !define DLL           "Vcam.MediaSource.dll"
 !define EXE           "Vcam.Broker.exe"
@@ -82,9 +82,14 @@ Section "Install"
     MessageBox MB_ICONEXCLAMATION "regsvr32 returned $0. The virtual camera may not work until the DLL is registered."
   ${EndIf}
 
+  ; Create shortcuts in the ALL-USERS (common) Start Menu / Desktop. The installer runs
+  ; elevated, so the per-user context would point at the elevating admin's profile and the
+  ; shortcuts wouldn't appear for the logged-in user. Common locations are visible to everyone.
+  SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\${PRODUCT}"
   CreateShortcut  "$SMPROGRAMS\${PRODUCT}\${PRODUCT}.lnk" "$INSTDIR\${EXE}"
   CreateShortcut  "$SMPROGRAMS\${PRODUCT}\Uninstall ${PRODUCT}.lnk" "$INSTDIR\Uninstall.exe"
+  CreateShortcut  "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\${EXE}"
 
   WriteRegStr HKLM "Software\${PRODUCT}" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT}" "DisplayName" "${PRODUCT} ${VERSION_TEXT}"
@@ -117,12 +122,15 @@ Section "Uninstall"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 
-  ; Start-menu shortcuts
+  ; Start-menu + desktop shortcuts (all-users, matching install)
+  SetShellVarContext all
   Delete "$SMPROGRAMS\${PRODUCT}\${PRODUCT}.lnk"
   Delete "$SMPROGRAMS\${PRODUCT}\Uninstall ${PRODUCT}.lnk"
   RMDir "$SMPROGRAMS\${PRODUCT}"
+  Delete "$DESKTOP\${PRODUCT}.lnk"
 
   ; per-user logs written by the broker
+  SetShellVarContext current
   RMDir /r "$LOCALAPPDATA\OBS2MF"
 
   ; all registry we created
