@@ -92,6 +92,9 @@ invalid parameter) the broker writes a **minidump** next to the log
 (`%LOCALAPPDATA%\OBS2MF\logs\broker-<timestamp>.dmp`) plus a `FATAL:` line and a final
 `crash-state:` health snapshot, so a previously silent crash is now diagnosable.
 
+See [docs/health-logging.md](docs/health-logging.md) for a full definition of every `health:`
+field (`priv`, `ws`, `gdi`, `user`, `handles`, …) and how to use them to diagnose leaks.
+
 ## Releasing
 
 Installers are published as **GitHub Release assets** (download page:
