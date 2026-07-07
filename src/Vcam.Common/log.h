@@ -5,6 +5,8 @@
 #include <shlobj.h>
 #include <knownfolders.h>
 #include <string>
+#include <vector>
+#include <algorithm>
 #include <mutex>
 #include <cstdio>
 #include <cstdarg>
@@ -28,6 +30,33 @@ public:
         } // release before LogRaw re-locks (std::mutex is non-recursive)
         LogRaw(L"---- log opened ----");
     }
+
+    // Start a fresh, uniquely-named log for this launch: `dir\prefix-YYYYMMDD-HHMMSS.log`.
+    // Every launch gets its own file (nothing is appended to or overwritten from a prior run),
+    // and older `prefix-*.log` files are pruned so at most `keep` remain. `dir` is remembered
+    // (Dir()) so callers can drop sibling files such as crash dumps next to the active log.
+    void InitSession(const std::wstring& dir, const std::wstring& prefix,
+                     size_t keep = 15, size_t maxBytes = 16 * 1024 * 1024) {
+        {
+            std::lock_guard<std::mutex> lock(_mtx);
+            _maxBytes = maxBytes;
+            _dir = dir;
+            _prefix = prefix;
+            SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+            PruneOld(keep); // trim previous sessions before adding this one
+
+            SYSTEMTIME st; GetLocalTime(&st);
+            wchar_t name[MAX_PATH];
+            _snwprintf_s(name, _countof(name), _TRUNCATE,
+                L"%s\\%s-%04u%02u%02u-%02u%02u%02u.log",
+                dir.c_str(), prefix.c_str(),
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+            _path = name;
+        } // release before LogRaw re-locks (std::mutex is non-recursive)
+        LogRaw(L"---- log opened ----");
+    }
+
+    const std::wstring& Dir() const { return _dir; }
 
     void Logf(const wchar_t* fmt, ...) {
         wchar_t buf[2048];
@@ -67,6 +96,29 @@ private:
         CloseHandle(h);
     }
 
+    // Delete oldest `prefix-*.log` files so that after this launch creates a new one, at
+    // most `keep` session logs exist. Filenames embed a zero-padded YYYYMMDD-HHMMSS stamp,
+    // so a lexical sort is chronological. Caller holds _mtx.
+    void PruneOld(size_t keep) {
+        if (_dir.empty() || _prefix.empty()) return;
+        std::wstring pattern = _dir + L"\\" + _prefix + L"-*.log";
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        std::vector<std::wstring> files;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                files.push_back(fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+
+        std::sort(files.begin(), files.end());
+        const size_t keepOld = keep > 0 ? keep - 1 : 0; // leave room for the new session file
+        if (files.size() <= keepOld) return;
+        for (size_t i = 0, n = files.size() - keepOld; i < n; ++i)
+            DeleteFileW((_dir + L"\\" + files[i]).c_str());
+    }
+
     void Rotate() {
         LARGE_INTEGER size{};
         HANDLE h = CreateFileW(_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -84,6 +136,8 @@ private:
 
     std::mutex _mtx;
     std::wstring _path;
+    std::wstring _dir;
+    std::wstring _prefix;
     size_t _maxBytes = 2 * 1024 * 1024;
 };
 

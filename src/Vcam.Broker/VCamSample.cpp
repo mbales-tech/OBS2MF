@@ -19,6 +19,14 @@
 #include <atomic>
 #include <vector>
 #include <algorithm>
+#include <exception>
+#include <cstdlib>
+#include <intrin.h>
+#include <psapi.h>
+#include <dbghelp.h>
+
+#pragma comment(lib, "psapi")
+#pragma comment(lib, "dbghelp")
 
 using namespace obs2mf;
 
@@ -44,9 +52,141 @@ static std::atomic<int> g_source{ SourceOBS };
 static std::atomic<bool> g_camRunning{ false };
 static std::atomic<bool> g_quit{ false };
 static std::thread g_producer;
+static std::thread g_telemetry;
 static HWND g_hwnd;
 static HINSTANCE g_inst;
 static NOTIFYICONDATAW g_nid{};
+
+// ---- telemetry counters (read by the health/telemetry thread) ----------------
+static std::atomic<unsigned long long> g_framesPublished{ 0 };
+static std::atomic<unsigned long long> g_obsFramesRcvd{ 0 };
+static std::atomic<int> g_effectiveSource{ SourceNone };
+static std::wstring g_dumpBase; // "<logdir>\broker"; crash dumps land next to the log
+
+// ---- diagnostics: health snapshot + crash handling ---------------------------
+// A single health line so a long session (or a crash) shows whether the process is
+// leaking. Resource growth over hours here is the signal we were previously blind to.
+static void LogHealth(const wchar_t* tag)
+{
+    PROCESS_MEMORY_COUNTERS_EX pmc{}; pmc.cb = sizeof(pmc);
+    GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc));
+    DWORD gdi = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    DWORD usr = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
+    DWORD handles = 0; GetProcessHandleCount(GetCurrentProcess(), &handles);
+    MEMORYSTATUSEX ms{}; ms.dwLength = sizeof(ms); GlobalMemoryStatusEx(&ms);
+    g_log.Logf(L"%s priv=%.1fMB ws=%.1fMB gdi=%lu user=%lu handles=%lu | sysUsed=%lu%% sysFree=%lluMB | "
+               L"clients=%d cam=%d src=%d obsFrames=%llu published=%llu",
+        tag,
+        pmc.PrivateUsage / 1048576.0, pmc.WorkingSetSize / 1048576.0,
+        gdi, usr, handles,
+        ms.dwMemoryLoad, ms.ullAvailPhys / (1024ull * 1024ull),
+        g_pipe.ClientCount(), g_camRunning.load() ? 1 : 0, g_effectiveSource.load(),
+        g_obsFramesRcvd.load(), g_framesPublished.load());
+}
+
+static void WriteMiniDump(EXCEPTION_POINTERS* ep, const wchar_t* reason)
+{
+    SYSTEMTIME st; GetLocalTime(&st);
+    wchar_t path[MAX_PATH];
+    _snwprintf_s(path, _countof(path), _TRUNCATE, L"%s-%04u%02u%02u-%02u%02u%02u.dmp",
+        g_dumpBase.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE)
+    {
+        MINIDUMP_EXCEPTION_INFORMATION mei{};
+        mei.ThreadId = GetCurrentThreadId();
+        mei.ExceptionPointers = ep;
+        mei.ClientPointers = FALSE;
+        auto type = (MINIDUMP_TYPE)(MiniDumpWithDataSegs | MiniDumpWithHandleData |
+                                    MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), h, type,
+            ep ? &mei : nullptr, nullptr, nullptr);
+        CloseHandle(h);
+        g_log.Logf(L"FATAL: %s; minidump -> %s", reason, path);
+    }
+    else
+    {
+        g_log.Logf(L"FATAL: %s; (minidump write failed, err %lu)", reason, GetLastError());
+    }
+}
+
+// Top-level SEH filter: catches access violations, stack overflows, and unhandled C++
+// exceptions (which surface here as 0xE06D7363). Writes a dump + FATAL line, then ends.
+static LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* ep)
+{
+    DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
+    void* addr = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+    wchar_t reason[160];
+    _snwprintf_s(reason, _countof(reason), _TRUNCATE, L"unhandled exception 0x%08X at 0x%p", code, addr);
+    WriteMiniDump(ep, reason); // dump first: most important artifact if the heap is corrupt
+    LogHealth(L"crash-state:");
+    return EXCEPTION_EXECUTE_HANDLER; // terminate the process (no WER dialog)
+}
+
+// The CRT failure hooks (terminate/purecall/invalid-parameter) don't hand us
+// EXCEPTION_POINTERS, so synthesize a context for the dump, then end the process.
+static void CaptureAndDump(const wchar_t* reason)
+{
+    CONTEXT ctx{}; RtlCaptureContext(&ctx);
+    EXCEPTION_RECORD rec{}; rec.ExceptionCode = 0xE0000001; rec.ExceptionAddress = _ReturnAddress();
+    EXCEPTION_POINTERS ep{ &rec, &ctx };
+    WriteMiniDump(&ep, reason); // dump first: most important artifact if the heap is corrupt
+    LogHealth(L"crash-state:");
+}
+static void OnTerminate() { CaptureAndDump(L"std::terminate"); TerminateProcess(GetCurrentProcess(), 3); }
+static void OnPureCall()  { CaptureAndDump(L"pure virtual call"); TerminateProcess(GetCurrentProcess(), 3); }
+static void OnInvalidParam(const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t)
+{ CaptureAndDump(L"CRT invalid parameter"); TerminateProcess(GetCurrentProcess(), 3); }
+
+static void InstallCrashHandlers()
+{
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    SetUnhandledExceptionFilter(OnUnhandledException);
+    std::set_terminate(OnTerminate);
+    _set_purecall_handler(OnPureCall);
+    _set_invalid_parameter_handler(OnInvalidParam);
+}
+
+static void LogEnvironment()
+{
+    MEMORYSTATUSEX ms{}; ms.dwLength = sizeof(ms); GlobalMemoryStatusEx(&ms);
+    DWORD major = 0, minor = 0, build = 0;
+    if (HMODULE nt = GetModuleHandleW(L"ntdll.dll"))
+    {
+        typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+        if (auto p = (RtlGetVersionPtr)GetProcAddress(nt, "RtlGetVersion"))
+        {
+            RTL_OSVERSIONINFOW vi{}; vi.dwOSVersionInfoSize = sizeof(vi);
+            if (p(&vi) == 0) { major = vi.dwMajorVersion; minor = vi.dwMinorVersion; build = vi.dwBuildNumber; }
+        }
+    }
+    wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    g_log.Logf(L"env: Windows %lu.%lu build %lu | RAM %lluMB total, %lluMB free (%lu%% used) | pid %lu | %s",
+        major, minor, build,
+        ms.ullTotalPhys / (1024ull * 1024ull), ms.ullAvailPhys / (1024ull * 1024ull), ms.dwMemoryLoad,
+        GetCurrentProcessId(), exe);
+}
+
+// Periodic health + immediate consumer connect/disconnect logging.
+static void TelemetryThread()
+{
+    int lastClients = 0;
+    unsigned sec = 0;
+    LogHealth(L"health:");
+    while (!g_quit.load())
+    {
+        for (int i = 0; i < 10 && !g_quit.load(); ++i) Sleep(100); // ~1s, quit-responsive
+        if (g_quit.load()) break;
+
+        int clients = g_pipe.ClientCount();
+        if (clients != lastClients)
+        {
+            g_log.Logf(L"consumers streaming: %d (was %d)", clients, lastClients);
+            lastClients = clients;
+        }
+        if (++sec % 60 == 0) LogHealth(L"health:");
+    }
+}
 
 // ---- test pattern ------------------------------------------------------------
 static void RgbToYuv(int r, int g, int b, BYTE& Y, BYTE& U, BYTE& V)
@@ -99,6 +239,7 @@ static void ProducerThread()
     std::vector<BYTE> frame(kFrameBytes);
     uint32_t seq = 0;
     int retryDelay = 0; // frames until we retry opening OBS (throttle log spam)
+    int lastReported = -1;
 
     while (!g_quit.load())
     {
@@ -125,6 +266,19 @@ static void ProducerThread()
             FillTestPatternNV12(frame, seq);
         }
 
+        // Log what the consumer is actually getting whenever it changes (OBS going live,
+        // auto-falling back to the test pattern, or a manual switch to Test).
+        if (reported != lastReported)
+        {
+            if (src == SourceOBS && reported == SourceOBS)
+                g_log.Logf(L"source: OBS Virtual Camera live");
+            else if (src == SourceOBS && reported == SourceTest)
+                g_log.Logf(L"source: OBS unavailable - serving test pattern (auto-fallback)");
+            else
+                g_log.Logf(L"source: test pattern");
+            lastReported = reported;
+        }
+
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
         FrameHeader hdr{};
         hdr.fourcc = kFourccNV12;
@@ -137,6 +291,10 @@ static void ProducerThread()
         hdr.sourceKind = (uint32_t)reported;
         hdr.flags = flag_valid;
         g_pipe.Publish(hdr, frame.data());
+
+        g_effectiveSource.store(reported);
+        g_obsFramesRcvd.store(obs.FramesReceived());
+        g_framesPublished.fetch_add(1);
 
         Sleep(33);
     }
@@ -291,8 +449,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR,
     g_inst = hInstance;
     WinTraceRegister();
 
-    g_log.Init(KnownFolderPath(FOLDERID_LocalAppData, L"OBS2MF\\broker.log"));
+    // Fresh, uniquely-named log per launch under %LOCALAPPDATA%\OBS2MF\logs (old ones pruned),
+    // so files never grow unbounded or get overwritten. Crash dumps land in the same folder.
+    std::wstring logDir = KnownFolderPath(FOLDERID_LocalAppData, L"OBS2MF\\logs");
+    g_log.InitSession(logDir, L"broker", 15);
+    g_dumpBase = logDir + L"\\broker";
+    InstallCrashHandlers();
+
     g_log.Logf(L"OBS2MF broker %s starting", OBS2MF_VERSION_STRING);
+    LogEnvironment();
 
     if (FAILED(MFStartup(MF_VERSION)))
     {
@@ -323,6 +488,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR,
     // start frame server + producer, then create the camera
     g_pipe.Start();
     g_producer = std::thread(ProducerThread);
+    g_telemetry = std::thread(TelemetryThread);
     StartCamera();
 
     MSG msg;
@@ -335,6 +501,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR,
     // shutdown
     g_quit.store(true);
     if (g_producer.joinable()) g_producer.join();
+    if (g_telemetry.joinable()) g_telemetry.join();
     StopCamera();
     g_pipe.Stop();
     Shell_NotifyIconW(NIM_DELETE, &g_nid);

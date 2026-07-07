@@ -71,8 +71,26 @@ broker runs (Session lifetime). Right-click the tray icon:
   when OBS's virtual camera isn't running.
 - **Source: Test pattern** — animated NV12 color bars.
 - **Start with Windows** — per-user auto-start at sign-in (`HKCU\...\Run`).
-- **Open log file** — `%LOCALAPPDATA%\OBS2MF\broker.log`.
+- **Open log file** — opens the current session log (see below).
 - **Exit**.
+
+## Logging & diagnostics
+
+Each launch writes a fresh log to `%LOCALAPPDATA%\OBS2MF\logs\broker-<YYYYMMDD-HHMMSS>.log`
+(the 15 most recent are kept; older ones are pruned, so files never grow unbounded or get
+overwritten). Beyond tray actions, the broker logs:
+
+- an `env:` line at startup (Windows build, total/free RAM, exe path);
+- a periodic `health:` line (~every 60 s) with process private/working-set memory, **GDI /
+  USER object counts**, handle count, system memory load, consumer count, and frame counters —
+  the signal for spotting a slow leak over a long session;
+- source transitions (OBS going live / auto-fallback to the test pattern) and consumer
+  connect/disconnect events.
+
+On an unhandled crash (access violation, C++ exception, `std::terminate`, pure-call, or a CRT
+invalid parameter) the broker writes a **minidump** next to the log
+(`%LOCALAPPDATA%\OBS2MF\logs\broker-<timestamp>.dmp`) plus a `FATAL:` line and a final
+`crash-state:` health snapshot, so a previously silent crash is now diagnosable.
 
 ## Releasing
 
@@ -98,7 +116,8 @@ Start-Process regsvr32 -Verb RunAs -ArgumentList '/s','"C:\Users\Public\OBS2MF\V
 
 Then run `Vcam.Broker.exe`. The camera exists only while the broker runs (Session lifetime).
 
-Logs: `%LOCALAPPDATA%\OBS2MF\broker.log` (tray → *Open log file*).
+Logs: `%LOCALAPPDATA%\OBS2MF\logs\broker-<timestamp>.log` (tray → *Open log file*). See
+**Logging & diagnostics** above.
 
 ## Versioning
 
